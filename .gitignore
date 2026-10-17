@@ -1,0 +1,23 @@
+# Build
+target/
+**/target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+
+# Ambiente local (copie .env.example para .env)
+.env
+docker-compose.override.yml
+
+# Maven Wrapper: modo only-script, nenhum .jar é versionado
+.mvn/wrapper/maven-wrapper.jar
+
+# Logs e temporários
+*.log
+logs/
+*.tmp
+.DS_Store
+Thumbs.db

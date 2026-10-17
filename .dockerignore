@@ -1,0 +1,21 @@
+# Contexto de build do Docker: somente pom.xml e src dos módulos são necessários
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+*.iml
+**/target
+.mvn
+mvnw
+mvnw.cmd
+.env
+.env.example
+docker-compose*.yml
+Dockerfile
+infra
+docs
+http
+scripts
+*.md
+

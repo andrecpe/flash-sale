@@ -1,0 +1,11 @@
+# Perfil "test" (testes com contexto Spring): sem Redis real.
+# O indicador "redis" sai da readiness e a validação de membros do grupo é relaxada.
+# O rate limit real (429) é verificado no Docker e nos testes de integração (Etapa 9).
+management:
+  health:
+    redis:
+      enabled: false
+  endpoint:
+    health:
+      validate-group-membership: false
+

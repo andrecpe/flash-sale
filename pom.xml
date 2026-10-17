@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.6</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>br.com.flashsale</groupId>
+    <artifactId>flash-sale</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>flash-sale</name>
+    <description>Flash Sale: Checkout e Order Processor com Redis, RabbitMQ, SAGA e OpenTelemetry</description>
+
+    <modules>
+        <module>api-gateway</module>
+        <module>checkout-service</module>
+        <module>order-processor-service</module>
+    </modules>
+
+    <properties>
+        <java.version>21</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <spring-cloud.version>2025.0.0</spring-cloud.version>
+        <!-- Versão do OpenTelemetry Java Agent copiado para a imagem Docker (perfil otel-agent) -->
+        <opentelemetry-javaagent.version>2.19.0</opentelemetry-javaagent.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <!-- Nome fixo do jar: <modulo>.jar (facilita o Dockerfile) -->
+        <finalName>${project.artifactId}</finalName>
+        <plugins>
+            <!-- Etapa 9: testes de integração (*IT) rodam no "verify" (Testcontainers; exigem Docker).
+                 "mvnw test" continua rápido e só executa os unitários (*Test).
+                 Para pular os de integração: mvnw verify -DskipITs -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+            Usado apenas no build Docker (-Potel-agent): copia o OpenTelemetry Java Agent para
+            target/otel/opentelemetry-javaagent.jar. Assim nenhum .jar é versionado no Git e o build
+            local (mvnw test) não precisa baixar o agent.
+        -->
+        <profile>
+            <id>otel-agent</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>copy-otel-agent</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>copy</goal>
+                                </goals>
+                                <configuration>
+                                    <artifactItems>
+                                        <artifactItem>
+                                            <groupId>io.opentelemetry.javaagent</groupId>
+                                            <artifactId>opentelemetry-javaagent</artifactId>
+                                            <version>${opentelemetry-javaagent.version}</version>
+                                            <destFileName>opentelemetry-javaagent.jar</destFileName>
+                                        </artifactItem>
+                                    </artifactItems>
+                                    <outputDirectory>${project.build.directory}/otel</outputDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>
+

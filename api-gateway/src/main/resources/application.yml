@@ -1,0 +1,78 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: api-gateway
+  # Etapa 7: Redis do rate limit (token bucket por IP)
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 1s
+  cloud:
+    gateway:
+      server:
+        webflux:
+          # Timeouts para o upstream: conexão (ms) e resposta (acima disso → 504 Gateway Timeout).
+          # 10 s cobre o pior caso do checkout: confirmação do broker (5 s) ou 3 tentativas de consulta.
+          httpclient:
+            connect-timeout: 2000
+            response-timeout: 10s
+          # Única rota: API pública do Checkout. Nada leva a /internal/** (bloqueado também por filtro).
+          routes:
+            - id: checkout
+              uri: ${CHECKOUT_URL:http://checkout-service:8081}
+              predicates:
+                - Path=/v1/orders/**,/v1/products/**
+              filters:
+                # Token bucket por IP no Redis: excesso → 429 Too Many Requests (+ headers X-RateLimit-*).
+                # Redis fora do ar → a requisição passa (fail-open): o limite protege, mas não derruba a venda.
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@clienteIpKeyResolver}"
+                    redis-rate-limiter.replenishRate: ${RATE_LIMIT_POR_SEGUNDO:30}
+                    redis-rate-limiter.burstCapacity: ${RATE_LIMIT_RAJADA:60}
+                    redis-rate-limiter.requestedTokens: 1
+          # CORS da API pública: o navegador só lê o X-Correlation-ID (e o saldo do rate limit) se expostos.
+          globalcors:
+            cors-configurations:
+              '[/v1/**]':
+                allowed-origin-patterns: ${CORS_ORIGENS:*}
+                allowed-methods: GET,POST,OPTIONS
+                allowed-headers: Content-Type,X-Correlation-ID
+                exposed-headers: X-Correlation-ID,X-RateLimit-Remaining,X-RateLimit-Replenish-Rate,X-RateLimit-Burst-Capacity
+                max-age: 3600
+
+# Health check (Etapa 1):
+# - liveness: apenas o estado da aplicação
+# - readiness: usada pelo HEALTHCHECK do Docker; Etapa 7: inclui o Redis (rate limit)
+# O endpoint "gateway" do Actuator NÃO é exposto (revelaria as rotas internas).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        readiness:
+          include: readinessState,redis
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: Ponto único de entrada da API
+
+# Etapa 2: correlationId (negócio) + trace_id/span_id (OpenTelemetry Agent) em toda linha de log
+logging:
+  pattern:
+    correlation: "[cid=%X{correlationId:-} trace=%X{trace_id:-} span=%X{span_id:-}] "
+

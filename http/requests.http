@@ -1,0 +1,82 @@
+@baseUrl = http://localhost:8080
+@checkoutUrl = http://localhost:8081
+@processorUrl = http://localhost:8082
+
+### 1) Health do gateway
+GET {{baseUrl}}/actuator/health
+
+### 2) Health do Checkout
+GET {{checkoutUrl}}/actuator/health/readiness
+
+### 3) Health do Order Processor
+GET {{processorUrl}}/actuator/health/readiness
+
+### 4) Estoque inicial de PROD-001
+GET {{baseUrl}}/v1/products/PROD-001/stock
+
+### 5) Pedido de sucesso — reserva e publicação em order-created
+POST {{baseUrl}}/v1/orders
+Content-Type: application/json
+X-Correlation-ID: demo-sucesso-0001
+
+{
+  "produto_id": "PROD-001",
+  "quantidade": 2,
+  "cliente_cpf": "50329291076",
+  "cliente_nome": "Fernando Augusto"
+}
+> {%
+client.global.set("pedidoSucessoId", response.body.pedido_id);
+%}
+
+### 6) Consultar o pedido confirmado
+GET {{baseUrl}}/v1/orders/{{pedidoSucessoId}}
+
+### 7) Estoque após a reserva
+GET {{baseUrl}}/v1/products/PROD-001/stock
+
+### 8) Pedido que falha no processamento e gera compensação
+POST {{baseUrl}}/v1/orders
+Content-Type: application/json
+X-Correlation-ID: demo-falha-0002
+
+{
+  "produto_id": "PROD-001",
+  "quantidade": 2,
+  "cliente_cpf": "50329291076",
+  "cliente_nome": "Cliente FALHA Demo"
+}
+> {%
+client.global.set("pedidoFalhaId", response.body.pedido_id);
+%}
+
+### 9) Consultar o pedido cancelado
+GET {{baseUrl}}/v1/orders/{{pedidoFalhaId}}
+
+### 10) Estoque após a compensação
+GET {{baseUrl}}/v1/products/PROD-001/stock
+
+### 11) Requisição inválida (400)
+POST {{baseUrl}}/v1/orders
+Content-Type: application/json
+X-Correlation-ID: demo-invalido-0003
+
+{
+  "produto_id": "PROD-001",
+  "quantidade": 0,
+  "cliente_cpf": "50329291076",
+  "cliente_nome": "Fernando Augusto"
+}
+
+### 12) Estoque insuficiente (409)
+POST {{baseUrl}}/v1/orders
+Content-Type: application/json
+X-Correlation-ID: demo-estoque-0004
+
+{
+  "produto_id": "PROD-002",
+  "quantidade": 999,
+  "cliente_cpf": "50329291076",
+  "cliente_nome": "Fernando Augusto"
+}
+

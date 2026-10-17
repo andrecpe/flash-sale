@@ -1,0 +1,22 @@
+# Perfil "test" (testes unitários com contexto Spring): sem PostgreSQL/RabbitMQ reais.
+# - banco H2 em memória no modo PostgreSQL (o Flyway aplica as mesmas migrations);
+# - listeners do RabbitMQ não iniciam e o indicador "rabbit" fica desligado.
+# A integração real (PostgreSQL/RabbitMQ) é verificada no Docker e nos testes da Etapa 9.
+spring:
+  datasource:
+    url: jdbc:h2:mem:order_db;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+  rabbitmq:
+    listener:
+      simple:
+        auto-startup: false
+
+management:
+  health:
+    rabbit:
+      enabled: false
+  endpoint:
+    health:
+      validate-group-membership: false
+

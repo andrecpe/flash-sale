@@ -1,0 +1,95 @@
+server:
+  port: ${SERVER_PORT:8081}
+  shutdown: graceful
+
+spring:
+  application:
+    name: checkout-service
+  threads:
+    virtual:
+      enabled: true
+  # Etapa 3: estoque/reserva e (Etapa 6) cache de pedidos
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+  # Etapa 3: publicação em order-created com publisher confirms
+  # Etapa 5: consumo de order-compensation (ack manual; erro → DLQ)
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:flashsale}
+    password: ${RABBITMQ_PASSWORD:flashsale}
+    publisher-confirm-type: simple
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 10
+        concurrency: 1
+        max-concurrency: 2
+        # Rejeição sem requeue: a fila encaminha para a DLQ (orders.dlx → order-compensation.dlq)
+        default-requeue-rejected: false
+  # Etapa 5: banco próprio (checkout_db) para o registro de compensações, schema versionado pelo Flyway
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/checkout_db}
+    username: ${DB_USER:checkout_user}
+    password: ${DB_PASSWORD:checkout}
+    hikari:
+      maximum-pool-size: 5
+
+# Estoque da campanha, cadastrado na subida com SET NX (não sobrescreve saldo existente)
+estoque:
+  inicial: ${ESTOQUE_INICIAL:PROD-001:100,PROD-002:10}
+
+app:
+  zona: America/Sao_Paulo
+  rabbit:
+    confirm-timeout: 5s
+    fila-compensacao: order-compensation
+  # Etapa 6: GET /v1/orders/{id} — cache-aside no Redis + API interna do Order Processor no cache-miss
+  consulta-pedido:
+    order-processor-url: ${ORDER_PROCESSOR_URL:http://localhost:8082}
+    connect-timeout: 1s
+    read-timeout: 2s
+    # 3 tentativas antes do 404 (pausas de 200 ms e 400 ms): cobre o pedido ainda na fila
+    tentativas: 3
+    espera-inicial: 200ms
+    ttl-cache: 300s
+    circuit-breaker:
+      janela: 20
+      chamadas-minimas: 10
+      taxa-falha-percentual: 50
+      espera-aberto: 10s
+
+# Health check (Etapa 1):
+# - liveness: apenas o estado da aplicação (não reinicia o container se uma dependência cair)
+# - readiness: usada pelo HEALTHCHECK do Docker (db, redis, rabbit)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      # Etapa 3: pronto para tráfego só com Redis e RabbitMQ acessíveis; Etapa 5: e PostgreSQL
+      group:
+        readiness:
+          include: readinessState,db,redis,rabbit
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: Recebe pedidos, reserva estoque e compensa reservas
+
+# Etapa 2: toda linha de log leva o correlationId (negócio) e o trace_id/span_id (OpenTelemetry Agent)
+logging:
+  pattern:
+    correlation: "[cid=%X{correlationId:-} trace=%X{trace_id:-} span=%X{span_id:-}] "
+

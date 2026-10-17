@@ -1,0 +1,73 @@
+server:
+  port: ${SERVER_PORT:8082}
+  shutdown: graceful
+
+spring:
+  application:
+    name: order-processor-service
+  threads:
+    virtual:
+      enabled: true
+  # Etapa 4: banco próprio (order_db), schema versionado pelo Flyway
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/order_db}
+    username: ${DB_USER:order_user}
+    password: ${DB_PASSWORD:order}
+    hikari:
+      maximum-pool-size: 10
+  # Etapa 4: consumo de order-created (ack manual) e publicação em order-compensation (publisher confirms)
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:flashsale}
+    password: ${RABBITMQ_PASSWORD:flashsale}
+    publisher-confirm-type: simple
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 10
+        concurrency: 2
+        max-concurrency: 4
+        # Rejeição sem requeue: a fila encaminha para a DLQ (orders.dlx → order-created.dlq)
+        default-requeue-rejected: false
+
+app:
+  zona: America/Sao_Paulo
+  # Simulação de falha: taxa aleatória (0.0–1.0); cliente_nome contendo FALHA falha sempre
+  falha:
+    taxa: ${FAILURE_RATE:0.0}
+  rabbit:
+    confirm-timeout: 5s
+    fila-pedidos: order-created
+
+# Health check (Etapa 1):
+# - liveness: apenas o estado da aplicação (não reinicia o container se uma dependência cair)
+# - readiness: usada pelo HEALTHCHECK do Docker
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      # Etapa 4: pronto para tráfego só com PostgreSQL e RabbitMQ acessíveis
+      group:
+        readiness:
+          include: readinessState,db,rabbit
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: Consome pedidos, persiste e publica compensações
+
+# Etapa 2: toda linha de log leva o correlationId (negócio) e o trace_id/span_id (OpenTelemetry Agent)
+logging:
+  pattern:
+    correlation: "[cid=%X{correlationId:-} trace=%X{trace_id:-} span=%X{span_id:-}] "
+

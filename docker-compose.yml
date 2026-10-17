@@ -1,0 +1,207 @@
+# Flash Sale — ambiente completo (infra + serviços + observabilidade)
+#
+#   Docker atual:   docker compose up -d --build
+#   Docker antigo:  docker-compose up -d --build
+#
+# Formato 2.4: compatível com docker-compose 1.22+ e com Compose v2
+# (suporta "depends_on: condition: service_healthy" e "mem_limit").
+version: "2.4"
+
+# Configuração comum aos 3 serviços Java (âncora YAML)
+x-java-service: &java-service
+  restart: unless-stopped
+  mem_limit: 512m
+  networks: [flash-sale]
+
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-lgtm:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_METRIC_EXPORT_INTERVAL: "15000"
+  # Etapa 8: métricas de negócio (Micrometer) exportadas pelo agent via OTLP → Prometheus
+  OTEL_INSTRUMENTATION_MICROMETER_ENABLED: "true"
+  # Etapa 8: logs → Loki com o correlationId (MDC) como atributo pesquisável; trace_id/span_id já vão por padrão
+  OTEL_INSTRUMENTATION_LOGBACK_APPENDER_EXPERIMENTAL_CAPTURE_MDC_ATTRIBUTES: correlationId
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=local
+
+services:
+
+  # ------------------------------------------------------------------------------------------
+  # Infraestrutura
+  # ------------------------------------------------------------------------------------------
+  postgres:
+    image: flash-sale/postgres:16
+    build: ./infra/postgres
+    restart: unless-stopped
+    mem_limit: 256m
+    # Docker antigo (< 20.10): o seccomp padrão faz o initdb falhar em "running bootstrap script".
+    # Inofensivo no Docker atual; apenas ambiente local de demo.
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+      CHECKOUT_DB_PASSWORD: ${CHECKOUT_DB_PASSWORD:-checkout}
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD:-order}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [flash-sale]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [flash-sale]
+
+  rabbitmq:
+    image: flash-sale/rabbitmq:4.1
+    build: ./infra/rabbitmq
+    restart: unless-stopped
+    mem_limit: 384m
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks: [flash-sale]
+
+  # Grafana + OpenTelemetry Collector + Tempo (traces) + Prometheus (métricas) + Loki (logs)
+  otel-lgtm:
+    image: ${OTEL_LGTM_IMAGE:-grafana/otel-lgtm:0.37.0}
+    restart: unless-stopped
+    mem_limit: 1g
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+      - "4317:4317"
+      - "4318:4318"
+    # Telemetria efêmera (sem volume): o ambiente de demo fica leve e limpo a cada subida.
+    # O healthcheck embutido da imagem usa curl em "localhost" (falha em Docker sem IPv6);
+    # a própria imagem cria /tmp/ready quando Collector, Tempo, Loki, Prometheus e Grafana estão prontos.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [flash-sale]
+
+  # ------------------------------------------------------------------------------------------
+  # Microsserviços (build pelo Dockerfile único da raiz, parametrizado por MODULE)
+  # ------------------------------------------------------------------------------------------
+  checkout-service:
+    <<: *java-service
+    image: flash-sale/checkout-service:latest
+    build:
+      context: .
+      args:
+        MODULE: checkout-service
+        SERVER_PORT: "8081"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: checkout-service
+      SERVER_PORT: "8081"
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+      DB_URL: jdbc:postgresql://postgres:5432/checkout_db
+      DB_USER: checkout_user
+      DB_PASSWORD: ${CHECKOUT_DB_PASSWORD:-checkout}
+      # Etapa 6: consulta no cache-miss (DNS do Docker distribui entre réplicas com --scale)
+      ORDER_PROCESSOR_URL: http://order-processor-service:8082
+      ESTOQUE_INICIAL: ${ESTOQUE_INICIAL:-PROD-001:100,PROD-002:10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-lgtm:
+        condition: service_started
+
+  order-processor-service:
+    <<: *java-service
+    image: flash-sale/order-processor-service:latest
+    build:
+      context: .
+      args:
+        MODULE: order-processor-service
+        SERVER_PORT: "8082"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: order-processor-service
+      SERVER_PORT: "8082"
+      DB_URL: jdbc:postgresql://postgres:5432/order_db
+      DB_USER: order_user
+      DB_PASSWORD: ${ORDER_DB_PASSWORD:-order}
+      RABBITMQ_HOST: rabbitmq
+      FAILURE_RATE: ${FAILURE_RATE:-0.3}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-lgtm:
+        condition: service_started
+
+  api-gateway:
+    <<: *java-service
+    image: flash-sale/api-gateway:latest
+    build:
+      context: .
+      args:
+        MODULE: api-gateway
+        SERVER_PORT: "8080"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: api-gateway
+      SERVER_PORT: "8080"
+      # Etapa 7: rate limit por IP (token bucket no Redis): requisições/s sustentadas e rajada máxima
+      REDIS_HOST: redis
+      RATE_LIMIT_POR_SEGUNDO: ${RATE_LIMIT_POR_SEGUNDO:-30}
+      RATE_LIMIT_RAJADA: ${RATE_LIMIT_RAJADA:-60}
+      CORS_ORIGENS: ${CORS_ORIGENS:-*}
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      checkout-service:
+        condition: service_healthy
+      otel-lgtm:
+        condition: service_started
+
+networks:
+  flash-sale:
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+

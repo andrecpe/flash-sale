@@ -1,0 +1,13 @@
+# Opcional (debug): expõe os serviços internos no host.
+# Copie para docker-compose.override.yml — o docker-compose lê esse arquivo automaticamente.
+version: "2.4"
+
+services:
+  checkout-service:
+    ports:
+      - "8081:8081"
+
+  order-processor-service:
+    ports:
+      - "8082:8082"
+
